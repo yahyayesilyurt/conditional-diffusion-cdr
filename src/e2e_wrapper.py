@@ -25,7 +25,7 @@ class E2EWrapper(nn.Module):
     """
 
     def __init__(self, padded_user_embs, padded_movie_embs,
-                 embed_dim=32, num_heads=4):
+                 embed_dim=64, num_heads=4):
         super(E2EWrapper, self).__init__()
 
         # GNN Embedding'leri — dondurulmuş

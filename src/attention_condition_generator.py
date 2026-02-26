@@ -19,7 +19,7 @@ class AttentionConditionGenerator(nn.Module):
     c_ud koşul vektörünü üretir.
     """
 
-    def __init__(self, embed_dim=32, num_heads=4, ffn_dim=128, dropout=0.1):
+    def __init__(self, embed_dim=64, num_heads=4, ffn_dim=256, dropout=0.1):
         super(AttentionConditionGenerator, self).__init__()
 
         assert embed_dim % num_heads == 0, \

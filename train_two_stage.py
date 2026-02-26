@@ -86,7 +86,7 @@ def train():
     lr           = 1e-3
     weight_decay = 1e-6
     num_epochs   = 50
-    embed_dim    = 32
+    embed_dim    = 64
     num_heads    = 4
     recall_k     = 1000
     cfg_w        = 2.0
@@ -94,7 +94,7 @@ def train():
     # Veri
     print("Embedding'ler yükleniyor...")
     padded_user_embs, _, padded_movie_embs = load_and_pad_embeddings(
-        "assets/27_gat_embeddings.pt"
+        "assets/185_sage_embeddings.pt"
     )
 
     train_dataset = CrossDomainDataset(

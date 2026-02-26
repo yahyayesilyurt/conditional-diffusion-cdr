@@ -23,7 +23,7 @@ class SinusoidalTimeEmbeddings(nn.Module):
 class DenoisingMLP(nn.Module):
     """Makaledeki f_theta — epsilon (gürültü) tahmini yapan MLP."""
 
-    def __init__(self, item_dim=32, cond_dim=32, time_dim=32):
+    def __init__(self, item_dim=64, cond_dim=64, time_dim=64):
         super().__init__()
 
         self.time_mlp = nn.Sequential(
@@ -33,24 +33,25 @@ class DenoisingMLP(nn.Module):
             nn.Linear(time_dim * 2, time_dim)
         )
 
-        input_dim = item_dim + cond_dim + time_dim  # 96
+        input_dim = item_dim + cond_dim + time_dim  # 64+64+64 = 192
 
+        # Katman boyutları input_dim'e orantılı — giriş boyutundan küçük katman olmamalı
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(0.1),
 
-            nn.Linear(128, 128),
-            nn.LayerNorm(128),
+            nn.Linear(256, 256),
+            nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(0.1),
 
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.GELU(),
 
-            nn.Linear(64, item_dim)
+            nn.Linear(128, item_dim)
         )
 
         self.item_dim = item_dim
@@ -63,7 +64,7 @@ class DenoisingMLP(nn.Module):
 
 class ConditionalDiffusion(nn.Module):
 
-    def __init__(self, steps=100, item_dim=32, cond_dim=32, p_uncond=0.1):
+    def __init__(self, steps=100, item_dim=64, cond_dim=64, p_uncond=0.1):
         super().__init__()
         self.steps    = steps
         self.p_uncond = p_uncond
@@ -106,7 +107,6 @@ class ConditionalDiffusion(nn.Module):
         sqrt_1ab = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1)
         noisy_item_emb = sqrt_ab * target_item_emb + sqrt_1ab * noise
 
-        # CFG: p_uncond olasılığıyla koşulu sıfırla
         if self.p_uncond > 0:
             uncond_mask = torch.rand(batch_size, device=device) < self.p_uncond
             condition   = torch.where(
@@ -182,9 +182,7 @@ class ConditionalDiffusion(nn.Module):
 
             sqrt_ab  = self.sqrt_alphas_cumprod[t]
             sqrt_1ab = self.sqrt_one_minus_alphas_cumprod[t]
-
-            # Düzeltme 1: clamp — t büyükken sqrt_ab küçülür, bölme patlar
-            pred_x0 = (x - sqrt_1ab * eps_cfg) / sqrt_ab.clamp(min=1e-6)
+            pred_x0  = (x - sqrt_1ab * eps_cfg) / sqrt_ab.clamp(min=1e-6)
 
             if t > 0:
                 coef1 = (self.alphas_cumprod_prev[t].sqrt() * self.betas[t]) \
@@ -199,14 +197,8 @@ class ConditionalDiffusion(nn.Module):
         x_norm      = F.normalize(x,                  p=2, dim=1)
         target_norm = F.normalize(target_domain_embs, p=2, dim=1)
 
-        sim = torch.matmul(x_norm, target_norm.T)  # (B, N)
-
-        # Düzeltme 2: PAD index (0) KNN'e girmesin
-        sim[:, 0] = -1e9
+        sim          = torch.matmul(x_norm, target_norm.T)
+        sim[:, 0]    = -1e9  # PAD index bastır
 
         _, top_k_indices = torch.topk(sim, k=k, dim=1)
-
-        # top_k_indices: target_domain_embs'in indeksleri
-        # PAD index 0 zaten bastırıldı (sim[:, 0] = -1e9)
-        # Gerçek filmler 1'den başlıyor → dataset'teki target_movie_id ile uyumlu
         return top_k_indices
