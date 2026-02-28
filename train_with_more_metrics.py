@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 
+from src.config_loader import load_config
 from src.dataset import load_and_pad_embeddings, CrossDomainDataset
 from src.e2e_wrapper import E2EWrapper
 from src.diffusion_model import ConditionalDiffusion
@@ -12,6 +13,16 @@ from src.more_metrics import calculate_metrics
 
 
 def train():
+    # -------------------------------------------------------------------------
+    # 0. KONFİGÜRASYON
+    # -------------------------------------------------------------------------
+    cfg        = load_config()
+    paths      = cfg['paths']
+    tr         = cfg['training']
+    dl         = cfg['dataloader']
+    mdl        = cfg['model']
+    val        = cfg['validation']
+
     # -------------------------------------------------------------------------
     # 1. HİPERPARAMETRELER
     # -------------------------------------------------------------------------
@@ -22,12 +33,12 @@ def train():
     )
     print(f"Kullanılan cihaz: {device}")
 
-    batch_size    = 2048
-    learning_rate = 1e-3
-    weight_decay  = 1e-6
-    num_epochs    = 50
-    embed_dim     = 64
-    num_heads     = 4
+    batch_size    = tr['batch_size']
+    learning_rate = tr['learning_rate']
+    weight_decay  = tr['weight_decay']
+    num_epochs    = tr['num_epochs']
+    embed_dim     = mdl['embed_dim']
+    num_heads     = mdl['num_heads']
 
     # -------------------------------------------------------------------------
     # 2. VERİ YÜKLEME
@@ -37,37 +48,37 @@ def train():
     # Cross-domain sinyal book_emb yerine user_emb'den geliyor.
     # load_and_pad_embeddings() üç değer döndürdüğü için _ ile görmezden geliyoruz.
     padded_user_embs, _, padded_movie_embs = load_and_pad_embeddings(
-        "assets/185_sage_embeddings.pt"
+        paths['embeddings']
     )
 
     print("Eğitim verisi yükleniyor...")
     train_dataset = CrossDomainDataset(
-        book_inter_path   ="inters/AmazonBooks.train.inter",
-        movie_inter_path  ="inters/AmazonMovies.train.inter",
-        book_mapping_path ="mappings/book_mapping.json",
-        movie_mapping_path="mappings/movie_mapping.json",
-        user_mapping_path ="mappings/user_mapping.json",
-        max_seq_len=10
+        book_inter_path   =paths['inters']['book_train'],
+        movie_inter_path  =paths['inters']['movie_train'],
+        book_mapping_path =paths['mappings']['book'],
+        movie_mapping_path=paths['mappings']['movie'],
+        user_mapping_path =paths['mappings']['user'],
+        max_seq_len=tr['max_seq_len']
     )
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=4, pin_memory=True
+        num_workers=dl['train_num_workers'], pin_memory=dl['train_pin_memory']
     )
 
     print("Doğrulama verisi yükleniyor...")
     valid_dataset = CrossDomainDataset(
-        book_inter_path        ="inters/AmazonBooks.train.inter",
-        movie_inter_path       ="inters/AmazonMovies.valid.inter",
-        train_movie_inter_path ="inters/AmazonMovies.train.inter",
-        book_mapping_path      ="mappings/book_mapping.json",
-        movie_mapping_path     ="mappings/movie_mapping.json",
-        user_mapping_path      ="mappings/user_mapping.json",
-        max_seq_len=10,
+        book_inter_path        =paths['inters']['book_train'],
+        movie_inter_path       =paths['inters']['movie_valid'],
+        train_movie_inter_path =paths['inters']['movie_train'],
+        book_mapping_path      =paths['mappings']['book'],
+        movie_mapping_path     =paths['mappings']['movie'],
+        user_mapping_path      =paths['mappings']['user'],
+        max_seq_len=tr['max_seq_len'],
         mode='valid'
     )
     valid_loader = DataLoader(
-        valid_dataset, batch_size=512, shuffle=False,
-        num_workers=4, pin_memory=True
+        valid_dataset, batch_size=dl['valid_batch_size'], shuffle=False,
+        num_workers=dl['valid_num_workers'], pin_memory=dl['valid_pin_memory']
     )
 
     # -------------------------------------------------------------------------
@@ -81,7 +92,10 @@ def train():
     ).to(device)
 
     diffusion_model = ConditionalDiffusion(
-        steps=100, item_dim=embed_dim, cond_dim=embed_dim, p_uncond=0.1
+        steps=mdl['diffusion']['steps'],
+        item_dim=embed_dim,
+        cond_dim=embed_dim,
+        p_uncond=mdl['diffusion']['p_uncond']
     ).to(device)
 
     all_parameters = (
@@ -90,7 +104,7 @@ def train():
     )
     optimizer = optim.Adam(all_parameters, lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs, eta_min=1e-5
+        optimizer, T_max=num_epochs, eta_min=mdl['scheduler']['eta_min']
     )
 
     best_hr    = 0.0
@@ -131,7 +145,7 @@ def train():
 
             loss = diffusion_model(target_item_embs, c_ud)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=tr['grad_clip_norm'])
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -145,7 +159,7 @@ def train():
         # -------------------------------------------------------------------------
         # 5. DOĞRULAMA
         # -------------------------------------------------------------------------
-        if (epoch + 1) % 5 == 0:
+        if (epoch + 1) % tr['validation_freq'] == 0:
             print(f"--- Epoch {epoch+1} Doğrulama ---")
             e2e_model.eval()
             diffusion_model.eval()
@@ -177,21 +191,21 @@ def train():
                     top_k_indices = diffusion_model.sample(
                         condition=c_ud,
                         target_domain_embs=all_movie_embs,
-                        w=2.0, k=500
+                        w=val['cfg_w'], k=max(val['k_list'])
                     )
 
-                    batch_metrics = calculate_metrics(top_k_indices, target_movie_ids, k_list=[10, 100, 500])
+                    batch_metrics = calculate_metrics(top_k_indices, target_movie_ids, k_list=val['k_list'])
                     all_hits.append(batch_metrics)
 
             print(f"--- Epoch {epoch+1} Validasyon Sonuçları ---")
-            for k in [10, 100, 500]:
+            for k in val['k_list']:
                 mean_hr = np.mean([b[k][0] for b in all_hits])
                 mean_ndcg = np.mean([b[k][1] for b in all_hits])
                 print(f"HR@{k:<3}: {mean_hr:.4f} | NDCG@{k:<3}: {mean_ndcg:.4f}")
             print("-" * 50)
 
-            mean_hr_10 = np.mean([b[10][0] for b in all_hits])
-            mean_ndcg_10 = np.mean([b[10][1] for b in all_hits])
+            mean_hr_10 = np.mean([b[val['k_list'][0]][0] for b in all_hits])
+            mean_ndcg_10 = np.mean([b[val['k_list'][0]][1] for b in all_hits])
 
             if mean_hr_10 > best_hr:
                 best_hr    = mean_hr_10
@@ -202,8 +216,8 @@ def train():
                     'diffusion_state_dict': diffusion_model.state_dict(),
                     'hr'                  : best_hr,
                     'ndcg'               : mean_ndcg_10,
-                }, "checkpoints/best_model.pt")
-                print(f"✓ En iyi model kaydedildi (Epoch {best_epoch}, HR@10={best_hr:.4f})")
+                }, paths['checkpoints']['best_model'])
+                print(f"✓ En iyi model kaydedildi (Epoch {best_epoch}, HR@{val['k_list'][0]}={best_hr:.4f})")
 
     print(f"\nEğitim tamamlandı. En iyi HR@10={best_hr:.4f} (Epoch {best_epoch})")
 

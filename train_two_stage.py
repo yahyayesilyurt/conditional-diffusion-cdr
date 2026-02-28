@@ -5,6 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
+from src.config_loader import load_config
 from src.dataset import load_and_pad_embeddings, CrossDomainDataset
 from src.e2e_wrapper import E2EWrapper
 from src.diffusion_model import ConditionalDiffusion
@@ -74,6 +75,13 @@ def two_stage_retrieve(
 # ---------------------------------------------------------------------------
 
 def train():
+    cfg      = load_config()
+    paths    = cfg['paths']
+    tr       = cfg['training']
+    dl       = cfg['dataloader']
+    mdl      = cfg['model']
+    ts       = cfg['two_stage']
+
     device = (
         torch.device("cuda") if torch.cuda.is_available() else
         torch.device("mps")  if torch.backends.mps.is_available() else
@@ -82,47 +90,47 @@ def train():
     print(f"Cihaz: {device}")
 
     # Hiperparametreler
-    batch_size   = 2048
-    lr           = 1e-3
-    weight_decay = 1e-6
-    num_epochs   = 50
-    embed_dim    = 64
-    num_heads    = 4
-    recall_k     = 1000
-    cfg_w        = 2.0
+    batch_size   = tr['batch_size']
+    lr           = tr['learning_rate']
+    weight_decay = tr['weight_decay']
+    num_epochs   = tr['num_epochs']
+    embed_dim    = mdl['embed_dim']
+    num_heads    = mdl['num_heads']
+    recall_k     = ts['recall_k']
+    cfg_w        = ts['cfg_w']
 
     # Veri
     print("Embedding'ler yükleniyor...")
     padded_user_embs, _, padded_movie_embs = load_and_pad_embeddings(
-        "assets/185_sage_embeddings.pt"
+        paths['embeddings']
     )
 
     train_dataset = CrossDomainDataset(
-        book_inter_path   ="inters/AmazonBooks.train.inter",
-        movie_inter_path  ="inters/AmazonMovies.train.inter",
-        book_mapping_path ="mappings/book_mapping.json",
-        movie_mapping_path="mappings/movie_mapping.json",
-        user_mapping_path ="mappings/user_mapping.json",
-        max_seq_len=10,
+        book_inter_path   =paths['inters']['book_train'],
+        movie_inter_path  =paths['inters']['movie_train'],
+        book_mapping_path =paths['mappings']['book'],
+        movie_mapping_path=paths['mappings']['movie'],
+        user_mapping_path =paths['mappings']['user'],
+        max_seq_len=tr['max_seq_len'],
     )
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=4, pin_memory=True
+        num_workers=dl['train_num_workers'], pin_memory=dl['train_pin_memory']
     )
 
     valid_dataset = CrossDomainDataset(
-        book_inter_path        ="inters/AmazonBooks.train.inter",
-        movie_inter_path       ="inters/AmazonMovies.valid.inter",
-        train_movie_inter_path ="inters/AmazonMovies.train.inter",
-        book_mapping_path      ="mappings/book_mapping.json",
-        movie_mapping_path     ="mappings/movie_mapping.json",
-        user_mapping_path      ="mappings/user_mapping.json",
-        max_seq_len=10,
+        book_inter_path        =paths['inters']['book_train'],
+        movie_inter_path       =paths['inters']['movie_valid'],
+        train_movie_inter_path =paths['inters']['movie_train'],
+        book_mapping_path      =paths['mappings']['book'],
+        movie_mapping_path     =paths['mappings']['movie'],
+        user_mapping_path      =paths['mappings']['user'],
+        max_seq_len=tr['max_seq_len'],
         mode='valid',
     )
     valid_loader = DataLoader(
-        valid_dataset, batch_size=512, shuffle=False,
-        num_workers=4, pin_memory=True
+        valid_dataset, batch_size=dl['valid_batch_size'], shuffle=False,
+        num_workers=dl['valid_num_workers'], pin_memory=dl['valid_pin_memory']
     )
 
     # Modeller
@@ -134,13 +142,16 @@ def train():
     ).to(device)
 
     diffusion_model = ConditionalDiffusion(
-        steps=100, item_dim=embed_dim, cond_dim=embed_dim, p_uncond=0.1
+        steps=mdl['diffusion']['steps'],
+        item_dim=embed_dim,
+        cond_dim=embed_dim,
+        p_uncond=mdl['diffusion']['p_uncond']
     ).to(device)
 
     all_params = list(e2e_model.parameters()) + list(diffusion_model.parameters())
     optimizer  = torch.optim.Adam(all_params, lr=lr, weight_decay=weight_decay)
     scheduler  = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs, eta_min=1e-5
+        optimizer, T_max=num_epochs, eta_min=mdl['scheduler']['eta_min']
     )
 
     best_hr    = 0.0
@@ -167,7 +178,7 @@ def train():
 
             loss = diffusion_model(target_emb, c_ud)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(all_params, 1.0)
+            torch.nn.utils.clip_grad_norm_(all_params, tr['grad_clip_norm'])
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -181,7 +192,7 @@ def train():
         # -------------------------------------------------------------------
         # Validation
         # -------------------------------------------------------------------
-        if (epoch + 1) % 5 == 0:
+        if (epoch + 1) % tr['validation_freq'] == 0:
             e2e_model.eval()
             diffusion_model.eval()
 
@@ -209,7 +220,7 @@ def train():
                         user_emb_matrix  =e2e_model.user_embedding.weight,
                         movie_emb_matrix =all_movie_embs_norm,
                         recall_k         =recall_k,
-                        top_k            =10,
+                        top_k            =ts['top_k'],
                         cfg_w            =cfg_w,
                     )
 
@@ -232,7 +243,7 @@ def train():
                     'diffusion_state_dict': diffusion_model.state_dict(),
                     'hr'                  : best_hr,
                     'ndcg'               : mean_ndcg,
-                }, "checkpoints/best_model_two_stage.pt")
+                }, paths['checkpoints']['best_model_two_stage'])
                 print(f"✓ Kaydedildi (Epoch {best_epoch}, HR@10={best_hr:.4f})")
 
     print(f"\nEğitim tamamlandı. En iyi HR@10={best_hr:.4f} (Epoch {best_epoch})")
