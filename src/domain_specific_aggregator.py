@@ -4,22 +4,22 @@ import torch.nn as nn
 
 class DomainSpecificAggregator(nn.Module):
     """
-    Makaledeki Denklem (1) ve (2)'yi uygulayan öz-dikkat tabanlı toplayıcı.
+    Self-attention-based aggregator
 
-    Değişiklikler (orijinale göre):
-    - sum → normalize edilmiş mean (sequence uzunluğundan bağımsız temsil)
-    - Transformer standardına uygun FFN (Feed-Forward Network) eklendi
-    - num_heads=4 (daha zengin dikkat başlıkları için embed_dim 4'e bölünebilmeli)
-    - LayerNorm eklendi (eğitim kararlılığı için)
+    Changes from original:
+    - sum → normalized mean (representation independent of sequence length)
+    - Added FFN (Feed-Forward Network) following Transformer standard
+    - num_heads=4 (embed_dim must be divisible by 4 for richer attention heads)
+    - Added LayerNorm (for training stability)
     """
 
     def __init__(self, embed_dim=64, num_heads=4, ffn_dim=256, dropout=0.1):
         super(DomainSpecificAggregator, self).__init__()
 
         assert embed_dim % num_heads == 0, \
-            f"embed_dim ({embed_dim}) num_heads ({num_heads})'e tam bölünebilmeli."
+            f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})."
 
-        # Öz-dikkat (Self-Attention) mekanizması
+        # Self-Attention mechanism
         self.self_attention = nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -28,8 +28,8 @@ class DomainSpecificAggregator(nn.Module):
         )
         self.norm1 = nn.LayerNorm(embed_dim)
 
-        # Feed-Forward Network (Transformer bloğunun ikinci yarısı)
-        # Orijinal kodda yoktu — temsil kapasitesini artırır.
+        # Feed-Forward Network (second half of the Transformer block)
+        # Increases representational capacity.
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ffn_dim),
             nn.GELU(),
@@ -42,9 +42,9 @@ class DomainSpecificAggregator(nn.Module):
     def forward(self, item_seq_embs, key_padding_mask=None):
         """
         item_seq_embs : (batch_size, seq_len, embed_dim)
-        key_padding_mask : (batch_size, seq_len) — padding yerleri True
+        key_padding_mask : (batch_size, seq_len) — True where padding
 
-        Döndürür:
+        Returns:
             h_u_d : (batch_size, embed_dim)
         """
         # --- Self-Attention + Residual ---
@@ -60,11 +60,10 @@ class DomainSpecificAggregator(nn.Module):
         # --- FFN + Residual ---
         x = self.norm2(x + self.ffn(x))
 
-        # --- Normalize edilmiş ortalama (mean) ile özetle ---
-        # Düzeltme: orijinal kodda sum kullanılıyordu.
-        # sum, farklı geçmiş uzunluklarına sahip kullanıcılar arasında büyük 
-        # ölçek farkları yaratıyor (10 film izleyen vs 1 film izleyen).
-        # Geçerli (padding olmayan) token'ların ortalamasını alıyoruz.
+        # --- Summarize with normalized mean ---
+        # sum creates large magnitude differences between users with different
+        # history lengths (10 movies watched vs. 1 movie watched).
+        # We take the mean over valid (non-padding) tokens.
         if key_padding_mask is not None:
             valid_mask = (~key_padding_mask).unsqueeze(-1).float()  # (B, S, 1)
             x = x * valid_mask

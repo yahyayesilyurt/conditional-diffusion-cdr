@@ -5,7 +5,7 @@ import math
 
 
 class SinusoidalTimeEmbeddings(nn.Module):
-    """Zaman adımını (t) modelin anlayabileceği bir vektöre çeviren standart Transformer zaman kodlaması."""
+    """Standard Transformer sinusoidal time encoding that converts a timestep (t) into a vector the model can consume."""
 
     def __init__(self, dim):
         super().__init__()
@@ -21,7 +21,7 @@ class SinusoidalTimeEmbeddings(nn.Module):
 
 
 class DenoisingMLP(nn.Module):
-    """Makaledeki f_theta — epsilon (gürültü) tahmini yapan MLP."""
+    """MLP that predicts the noise (epsilon)."""
 
     def __init__(self, item_dim=64, cond_dim=64, time_dim=64):
         super().__init__()
@@ -35,7 +35,7 @@ class DenoisingMLP(nn.Module):
 
         input_dim = item_dim + cond_dim + time_dim  # 64+64+64 = 192
 
-        # Katman boyutları input_dim'e orantılı — giriş boyutundan küçük katman olmamalı
+        # Layer sizes are proportional to input_dim — no layer should be smaller than the input
         self.net = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.LayerNorm(256),
@@ -89,13 +89,13 @@ class ConditionalDiffusion(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    # EĞİTİM
+    # TRAINING
     # ------------------------------------------------------------------
 
     def forward(self, target_item_emb, condition):
         """
-        target_item_emb : (B, D) — L2 normalize edilmiş hedef film embedding'i
-        condition       : (B, D) — L2 normalize edilmiş koşul vektörü (c_ud)
+        target_item_emb : (B, D) — L2-normalized target movie embedding
+        condition       : (B, D) — L2-normalized condition vector (c_ud)
         """
         batch_size = target_item_emb.shape[0]
         device     = target_item_emb.device
@@ -119,18 +119,17 @@ class ConditionalDiffusion(nn.Module):
         return F.mse_loss(predicted_noise, noise)
 
     # ------------------------------------------------------------------
-    # ÇIKARIM
+    # INFERENCE
     # ------------------------------------------------------------------
 
     @torch.no_grad()
     def generate(self, condition, w=2.0):
         """
-        Ters difüzyon ile ideal film vektörü üretir — KNN yapmaz.
-        two_stage_retrieve tarafından çağrılır; KNN orada yapılır.
+        Generates an ideal movie vector via reverse diffusion.
 
-        condition : (B, D) — L2 normalize edilmiş koşul vektörü
-        w         : CFG ağırlığı
-        Döndürür  : (B, D) — üretilen ham vektör (normalize edilmemiş)
+        condition : (B, D) — L2-normalized condition vector
+        w         : CFG weight
+        Returns   : (B, D) — generated raw vector (not normalized)
         """
         batch_size = condition.shape[0]
         device     = condition.device
@@ -163,10 +162,10 @@ class ConditionalDiffusion(nn.Module):
     @torch.no_grad()
     def sample(self, condition, target_domain_embs, w=2.0, k=10):
         """
-        condition          : (B, D) — L2 normalize edilmiş koşul vektörü
-        target_domain_embs : (N, D) — tüm filmlerin embedding'leri (PAD dahil)
-        w                  : CFG ağırlığı
-        k                  : kaç film önerileceği
+        condition          : (B, D) — L2-normalized condition vector
+        target_domain_embs : (N, D) — embeddings for all movies (including PAD)
+        w                  : CFG weight
+        k                  : number of movies to recommend
         """
         batch_size = condition.shape[0]
         device     = condition.device
@@ -198,7 +197,7 @@ class ConditionalDiffusion(nn.Module):
         target_norm = F.normalize(target_domain_embs, p=2, dim=1)
 
         sim          = torch.matmul(x_norm, target_norm.T)
-        sim[:, 0]    = -1e9  # PAD index bastır
+        sim[:, 0]    = -1e9  # suppress PAD index
 
         _, top_k_indices = torch.topk(sim, k=k, dim=1)
         return top_k_indices

@@ -14,7 +14,7 @@ from src.metrics import calculate_metrics
 
 def train():
     # -------------------------------------------------------------------------
-    # 0. KONFİGÜRASYON
+    # 0. CONFIGURATION
     # -------------------------------------------------------------------------
     cfg        = load_config()
     paths      = cfg['paths']
@@ -24,14 +24,14 @@ def train():
     val        = cfg['validation']
 
     # -------------------------------------------------------------------------
-    # 1. HİPERPARAMETRELER
+    # 1. HYPERPARAMETERS
     # -------------------------------------------------------------------------
     device = (
         torch.device("cuda")  if torch.cuda.is_available()  else
         torch.device("mps")   if torch.backends.mps.is_available() else
         torch.device("cpu")
     )
-    print(f"Kullanılan cihaz: {device}")
+    print(f"Using device: {device}")
 
     batch_size    = tr['batch_size']
     learning_rate = tr['learning_rate']
@@ -41,17 +41,17 @@ def train():
     num_heads     = mdl['num_heads']
 
     # -------------------------------------------------------------------------
-    # 2. VERİ YÜKLEME
+    # 2. DATA LOADING
     # -------------------------------------------------------------------------
-    print("GNN Embedding'leri yükleniyor...")
-    # padded_book_embs yükleniyor ama E2EWrapper artık kullanmıyor.
-    # Cross-domain sinyal book_emb yerine user_emb'den geliyor.
-    # load_and_pad_embeddings() üç değer döndürdüğü için _ ile görmezden geliyoruz.
+    print("Loading GNN embeddings...")
+    # padded_book_embs is loaded but E2EWrapper no longer uses it.
+    # Cross-domain signal comes from user_emb instead of book_emb.
+    # load_and_pad_embeddings() returns three values; the second is ignored with _.
     padded_user_embs, _, padded_movie_embs = load_and_pad_embeddings(
         paths['embeddings']
     )
 
-    print("Eğitim verisi yükleniyor...")
+    print("Loading training data...")
     train_dataset = CrossDomainDataset(
         book_inter_path   =paths['inters']['book_train'],
         movie_inter_path  =paths['inters']['movie_train'],
@@ -65,7 +65,7 @@ def train():
         num_workers=dl['train_num_workers'], pin_memory=dl['train_pin_memory']
     )
 
-    print("Doğrulama verisi yükleniyor...")
+    print("Loading validation data...")
     valid_dataset = CrossDomainDataset(
         book_inter_path        =paths['inters']['book_train'],
         movie_inter_path       =paths['inters']['movie_valid'],
@@ -82,7 +82,7 @@ def train():
     )
 
     # -------------------------------------------------------------------------
-    # 3. MODELLERİ BAŞLATMA
+    # 3. MODEL INITIALIZATION
     # -------------------------------------------------------------------------
     e2e_model = E2EWrapper(
         padded_user_embs  =padded_user_embs,
@@ -111,9 +111,9 @@ def train():
     best_epoch = 0
 
     # -------------------------------------------------------------------------
-    # 4. EĞİTİM DÖNGÜSÜ
+    # 4. TRAINING LOOP
     # -------------------------------------------------------------------------
-    print("Eğitim başlıyor...")
+    print("Training started...")
     for epoch in range(num_epochs):
         e2e_model.train()
         diffusion_model.train()
@@ -121,8 +121,8 @@ def train():
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
         for batch in progress_bar:
-            # book_seq dataset'ten geliyor ama bu mimaride kullanılmıyor.
-            # Cross-domain sinyal user_emb üzerinden e2e_wrapper içinde sağlanıyor.
+            # book_seq comes from the dataset but is not used in this architecture.
+            # Cross-domain signal is provided via user_emb inside e2e_wrapper.
             user_ids         = batch['user_id'].to(device)         # (B,)
             movie_seq        = batch['movie_seq'].to(device)       # (B, 10)
             movie_mask       = batch['movie_mask'].to(device)      # (B, 10)
@@ -130,8 +130,8 @@ def train():
 
             optimizer.zero_grad()
 
-            # c_ud: user_emb (cross-domain) + movie_seq (domain-specific) → koşul vektörü
-            # e2e_wrapper içinde user_ids+1 offset uygulanıyor (PAD=0 için)
+            # c_ud: user_emb (cross-domain) + movie_seq (domain-specific) → condition vector
+            # user_ids+1 offset is applied inside e2e_wrapper (PAD=0 convention)
             c_ud = e2e_model(
                 user_ids=user_ids,
                 movie_seq_ids=movie_seq,
@@ -139,7 +139,7 @@ def train():
                 target_domain='Movie'
             )
 
-            # Hedef film embedding'i — target_movie_ids zaten 1-indexed (dataset'te +1)
+            # Target movie embedding — target_movie_ids are already 1-indexed (+1 applied in dataset)
             raw_target_embs  = e2e_model.movie_embedding(target_movie_ids)
             target_item_embs = F.normalize(raw_target_embs, p=2, dim=1)
 
@@ -157,10 +157,10 @@ def train():
         print(f"Epoch [{epoch+1}/{num_epochs}] | Loss: {avg_loss:.4f} | LR: {current_lr:.6f}")
 
         # -------------------------------------------------------------------------
-        # 5. DOĞRULAMA
+        # 5. VALIDATION
         # -------------------------------------------------------------------------
         if (epoch + 1) % tr['validation_freq'] == 0:
-            print(f"--- Epoch {epoch+1} Doğrulama ---")
+            print(f"--- Epoch {epoch+1} Validation ---")
             e2e_model.eval()
             diffusion_model.eval()
 
@@ -168,7 +168,7 @@ def train():
             all_ndcgs = []
 
             with torch.no_grad():
-                # Tüm film embedding'lerini normalize et — validation boyunca sabit
+                # Normalize all movie embeddings — kept fixed throughout validation
                 all_movie_embs = F.normalize(
                     e2e_model.movie_embedding.weight, p=2, dim=1
                 )  # (N_movies+1, D)
@@ -186,8 +186,8 @@ def train():
                         target_domain='Movie'
                     )
 
-                    # sample() — 153K pool üzerinde tam KNN (single-stage)
-                    # sim[:, 0] = -1e9 ile PAD bastırılıyor (diffusion_model içinde)
+                    # sample() — full KNN over the data pool (single-stage)
+                    # sim[:, 0] is suppressed with -1e9 to mask PAD (inside diffusion_model)
                     top_k_indices = diffusion_model.sample(
                         condition=c_ud,
                         target_domain_embs=all_movie_embs,
@@ -216,9 +216,9 @@ def train():
                     'hr'                  : best_hr,
                     'ndcg'               : mean_ndcg,
                 }, paths['checkpoints']['best_model'])
-                print(f"✓ En iyi model kaydedildi (Epoch {best_epoch}, HR@10={best_hr:.4f})")
+                print(f"✓ Best model saved (Epoch {best_epoch}, HR@10={best_hr:.4f})")
 
-    print(f"\nEğitim tamamlandı. En iyi HR@10={best_hr:.4f} (Epoch {best_epoch})")
+    print(f"\nTraining complete. Best HR@10={best_hr:.4f} (Epoch {best_epoch})")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from src.metrics import calculate_metrics
 
 
 # ---------------------------------------------------------------------------
-# İki Aşamalı Retrieval
+# Two-Stage Retrieval
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
@@ -28,38 +28,37 @@ def two_stage_retrieve(
     cfg_w:            float = 2.0,
 ) -> torch.Tensor:
     """
-    Stage 1 — GNN Recall (153K → recall_k):
-        user embedding ile tüm filmler arasında kosinüs benzerliği.
-        PAD (index 0) bastırılır.
+    Stage 1 — GNN Recall (recall_k):
+        cosine similarity between user embedding and all movies.
+        PAD (index 0) is suppressed.
 
     Stage 2 — Diffusion Rerank (recall_k → top_k):
-        diffusion_model.generate() ile ideal vektör üretilir.
-        Sadece recall_k aday üzerinde KNN yapılır.
+        ideal vector is generated with diffusion_model.generate().
+        KNN is performed over only recall_k candidates.
 
-    Döndürür: (B, top_k) — movie_emb_matrix indeksleri (1-indexed, PAD hariç)
+    Returns: (B, top_k) — movie_emb_matrix indices (1-indexed, PAD excluded)
     """
     device = user_ids.device
 
     # -----------------------------------------------------------------------
-    # Stage 1: GNN user embedding ile hızlı recall
+    # Stage 1: Fast recall with GNN user embedding
     # -----------------------------------------------------------------------
-    # e2e_wrapper'da user_ids+1 yapılıyor — burada da aynı offset
+    # user_ids+1 is applied in e2e_wrapper — same offset used here
     real_user_idx = (user_ids + 1).clamp(0, user_emb_matrix.shape[0] - 1)
     user_vecs     = F.normalize(user_emb_matrix[real_user_idx], p=2, dim=1)  # (B, D)
 
     stage1_sim       = torch.matmul(user_vecs, movie_emb_matrix.T)  # (B, N+1)
-    stage1_sim[:, 0] = -1e9  # PAD bastır
+    stage1_sim[:, 0] = -1e9  # suppress PAD
 
     _, recall_indices = torch.topk(
         stage1_sim, k=min(recall_k, stage1_sim.shape[1] - 1), dim=1
     )  # (B, recall_k)
 
     # -----------------------------------------------------------------------
-    # Stage 2: Diffusion ile rerank
+    # Stage 2: Rerank with Diffusion
     # -----------------------------------------------------------------------
     candidate_embs = movie_emb_matrix[recall_indices]  # (B, recall_k, D)
 
-    # diffusion_model.generate() — kod tekrarı kaldırıldı
     generated = diffusion_model.generate(c_ud, w=cfg_w)          # (B, D)
     gen_norm  = F.normalize(generated, p=2, dim=1).unsqueeze(1)  # (B, 1, D)
 
@@ -71,7 +70,7 @@ def two_stage_retrieve(
 
 
 # ---------------------------------------------------------------------------
-# Eğitim
+# Training
 # ---------------------------------------------------------------------------
 
 def train():
@@ -87,9 +86,9 @@ def train():
         torch.device("mps")  if torch.backends.mps.is_available() else
         torch.device("cpu")
     )
-    print(f"Cihaz: {device}")
+    print(f"Device: {device}")
 
-    # Hiperparametreler
+    # Hyperparameters
     batch_size   = tr['batch_size']
     lr           = tr['learning_rate']
     weight_decay = tr['weight_decay']
@@ -99,8 +98,8 @@ def train():
     recall_k     = ts['recall_k']
     cfg_w        = ts['cfg_w']
 
-    # Veri
-    print("Embedding'ler yükleniyor...")
+    # Data
+    print("Loading embeddings...")
     padded_user_embs, _, padded_movie_embs = load_and_pad_embeddings(
         paths['embeddings']
     )
@@ -133,7 +132,7 @@ def train():
         num_workers=dl['valid_num_workers'], pin_memory=dl['valid_pin_memory']
     )
 
-    # Modeller
+    # Models
     e2e_model = E2EWrapper(
         padded_user_embs =padded_user_embs,
         padded_movie_embs=padded_movie_embs,
@@ -157,7 +156,7 @@ def train():
     best_hr    = 0.0
     best_epoch = 0
 
-    print("Eğitim başlıyor...")
+    print("Training started...")
     for epoch in range(num_epochs):
         e2e_model.train()
         diffusion_model.train()
@@ -196,7 +195,7 @@ def train():
             e2e_model.eval()
             diffusion_model.eval()
 
-            # Tüm film embedding'lerini normalize et — validation boyunca sabit
+            # Normalize all movie embeddings — kept fixed throughout validation
             all_movie_embs_norm = F.normalize(
                 e2e_model.movie_embedding.weight, p=2, dim=1
             )  # (N_movies+1, D)
@@ -244,9 +243,9 @@ def train():
                     'hr'                  : best_hr,
                     'ndcg'               : mean_ndcg,
                 }, paths['checkpoints']['best_model_two_stage'])
-                print(f"✓ Kaydedildi (Epoch {best_epoch}, HR@10={best_hr:.4f})")
+                print(f"✓ Saved (Epoch {best_epoch}, HR@10={best_hr:.4f})")
 
-    print(f"\nEğitim tamamlandı. En iyi HR@10={best_hr:.4f} (Epoch {best_epoch})")
+    print(f"\nTraining complete. Best HR@10={best_hr:.4f} (Epoch {best_epoch})")
 
 
 if __name__ == "__main__":
