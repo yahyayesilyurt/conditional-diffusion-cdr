@@ -25,7 +25,7 @@ class E2EWrapper(nn.Module):
     """
 
     def __init__(self, padded_user_embs, padded_movie_embs,
-                 embed_dim=64, num_heads=4):
+                 embed_dim=128, num_heads=4):
         super(E2EWrapper, self).__init__()
 
         # GNN Embeddings — frozen
@@ -50,15 +50,16 @@ class E2EWrapper(nn.Module):
             nn.Linear(embed_dim, embed_dim * 2),
             nn.LayerNorm(embed_dim * 2),  # aligned with user_proj
             nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(embed_dim * 2, embed_dim)
         )
 
         self.movie_aggregator = DomainSpecificAggregator(
-            embed_dim=embed_dim, num_heads=num_heads
+            embed_dim=embed_dim, num_heads=num_heads, ffn_dim=embed_dim * 4
         )
 
         self.condition_generator = AttentionConditionGenerator(
-            embed_dim=embed_dim, num_heads=num_heads
+            embed_dim=embed_dim, num_heads=num_heads, ffn_dim=embed_dim * 4
         )
 
     def forward(self, user_ids, movie_seq_ids, movie_mask,

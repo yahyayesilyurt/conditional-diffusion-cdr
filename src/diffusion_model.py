@@ -23,7 +23,7 @@ class SinusoidalTimeEmbeddings(nn.Module):
 class DenoisingMLP(nn.Module):
     """MLP that predicts the noise (epsilon)."""
 
-    def __init__(self, item_dim=64, cond_dim=64, time_dim=64):
+    def __init__(self, item_dim=128, cond_dim=128, time_dim=128):
         super().__init__()
 
         self.time_mlp = nn.Sequential(
@@ -33,11 +33,16 @@ class DenoisingMLP(nn.Module):
             nn.Linear(time_dim * 2, time_dim)
         )
 
-        input_dim = item_dim + cond_dim + time_dim  # 64+64+64 = 192
+        input_dim = item_dim + cond_dim + time_dim  # 128+128+128 = 384
 
-        # Layer sizes are proportional to input_dim — no layer should be smaller than the input
+        # (128 Sizes Available): 384 -> 512 -> 256 -> 256 -> 128
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(512, 256),
             nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -45,13 +50,8 @@ class DenoisingMLP(nn.Module):
             nn.Linear(256, 256),
             nn.LayerNorm(256),
             nn.GELU(),
-            nn.Dropout(0.1),
 
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-
-            nn.Linear(128, item_dim)
+            nn.Linear(256, item_dim) # Out: 128
         )
 
         self.item_dim = item_dim
@@ -64,7 +64,7 @@ class DenoisingMLP(nn.Module):
 
 class ConditionalDiffusion(nn.Module):
 
-    def __init__(self, steps=100, item_dim=64, cond_dim=64, p_uncond=0.1):
+    def __init__(self, steps=100, item_dim=128, cond_dim=128, p_uncond=0.1):
         super().__init__()
         self.steps    = steps
         self.p_uncond = p_uncond

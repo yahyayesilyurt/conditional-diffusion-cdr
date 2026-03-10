@@ -7,7 +7,7 @@
 # Paths
 # ---------------------------------------------------------------------------
 paths:
-  embeddings: "assets/185_sage_embeddings.pt"
+  embeddings: "assets/mixgcf.pt"
 
   inters:
     book_train: "inters/AmazonBooks.train.inter"
@@ -50,7 +50,7 @@ dataloader:
 # Model Architecture
 # ---------------------------------------------------------------------------
 model:
-  embed_dim: 64
+  embed_dim: 128
   num_heads: 4
 
   diffusion:
@@ -66,12 +66,5 @@ model:
 validation:
   cfg_w: 2.0 # classifier-free guidance weight
   k_list: [10, 100, 500] # used by train_with_more_metrics.py
-  top_k: 10 # used by train.py / train_two_stage.py
+  top_k: 10 # used by train.py
 
-# ---------------------------------------------------------------------------
-# Two-Stage Retrieval (train_two_stage.py only)
-# ---------------------------------------------------------------------------
-two_stage:
-  recall_k: 1000 # Stage-1 candidate pool size
-  top_k: 10 # Final recommendation list size
-  cfg_w: 2.0 # CFG weight for diffusion rerank

@@ -9,11 +9,11 @@ class DomainSpecificAggregator(nn.Module):
     Changes from original:
     - sum → normalized mean (representation independent of sequence length)
     - Added FFN (Feed-Forward Network) following Transformer standard
-    - num_heads=4 (embed_dim must be divisible by 4 for richer attention heads)
+    - num_heads=4 (embed_dim must be divisible by num_heads for richer attention heads)
     - Added LayerNorm (for training stability)
     """
 
-    def __init__(self, embed_dim=64, num_heads=4, ffn_dim=256, dropout=0.1):
+    def __init__(self, embed_dim=128, num_heads=4, ffn_dim=512, dropout=0.1):
         super(DomainSpecificAggregator, self).__init__()
 
         assert embed_dim % num_heads == 0, \
