@@ -29,7 +29,7 @@ def load_and_pad_embeddings(pt_file_path):
     return padded_user_embs, padded_book_embs, padded_movie_embs
 
 
-# RECENT-N SLIDING WINDOW
+# FULL SLIDING WINDOW
 class CrossDomainDataset(Dataset):
     def __init__(self, book_inter_path, movie_inter_path, 
                  book_mapping_path, movie_mapping_path, user_mapping_path, 
@@ -64,13 +64,8 @@ class CrossDomainDataset(Dataset):
                 # Get the user's full movie history (applying +1 offset)
                 full_movie_history = [self.movie_mapping[tid] + 1 for tid in group['item_id:token'].values if tid in self.movie_mapping]
                 
-                # RECENT-N SLIDING WINDOW LOGIC:
-                # E.g.: if [1, 2, 3, 4, 5, 6] watched and N=3:
-                # 1. [1, 2, 3] -> Target: 4
-                # 2. [1, 2, 3, 4] -> Target: 5
-                # 3. [1, 2, 3, 4, 5] -> Target: 6
-                N = 3
-                for i in range(max(1, len(full_movie_history) - N), len(full_movie_history)):
+                # FULL SLIDING WINDOW LOGIC:
+                for i in range(1, len(full_movie_history)):
                     history = full_movie_history[:i]
                     target = full_movie_history[i]
                     self.samples.append({
