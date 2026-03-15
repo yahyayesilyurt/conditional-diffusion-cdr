@@ -1,13 +1,14 @@
 # =============================================================================
-# Conditional Diffusion Model — Central Configuration File
-# Edit this file to change any path, hyperparameter, or model setting.
+# Conditional Diffusion Model — Amazon Configuration
+# Source domain : Book  (→ h_u_source)
+# Target domain : Movie (→ h_u_target / recommendations)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 paths:
-  embeddings: "assets/mixgcf.pt"
+  embeddings: "assets/lightgcn.pt"
 
   inters:
     book_train: "inters/AmazonBooks.train.inter"
@@ -22,19 +23,20 @@ paths:
 
   checkpoints:
     best_model: "checkpoints/best_model.pt"
-    best_model_two_stage: "checkpoints/best_model_two_stage.pt"
 
 # ---------------------------------------------------------------------------
 # Training Hyperparameters
 # ---------------------------------------------------------------------------
 training:
-  batch_size: 2048
-  learning_rate: 1.0e-3
+  seed: 42 # reproducibility
+  batch_size: 512 # 2048→512: VRAM limit
+  learning_rate: 1.0e-4 # 1e-3 is too aggressive for AdamW + Transformer
   weight_decay: 1.0e-6
-  num_epochs: 50
+  num_epochs: 100
   max_seq_len: 10
   grad_clip_norm: 1.0
-  validation_freq: 5 # run validation every N epochs
+  validation_freq: 2 # run validation every N epochs
+  early_stop_patience: 15 # stop if no improvement in 15 validations (~30 epochs)
 
 # ---------------------------------------------------------------------------
 # DataLoader
@@ -50,21 +52,24 @@ dataloader:
 # Model Architecture
 # ---------------------------------------------------------------------------
 model:
-  embed_dim: 128
-  num_heads: 4
+  embed_dim: 256 # embedding dim — 64/128/256/512 supported
+  num_heads: 8 # embed_dim % num_heads == 0 required (256/8=32)
+  dropout: 0.1 # shared across E2EWrapper + DenoisingMLP + Aggregator
+  use_book_stream:
+    false # Ablation: true=Triple-Stream, false=GNN+movie only
+    # Amazon Books→Movies experiment showed false gives better results
 
   diffusion:
-    steps: 100
-    p_uncond: 0.1
+    steps: 200 # 100→200: more precise noise schedule
+    p_uncond: 0.1 # Classifier-Free Guidance dropout rate
 
   scheduler:
     eta_min: 1.0e-5 # CosineAnnealingLR minimum LR
+    warmup_steps: 1000 # number of linear warm-up steps
 
 # ---------------------------------------------------------------------------
 # Validation / Inference Settings
 # ---------------------------------------------------------------------------
 validation:
-  cfg_w: 2.0 # classifier-free guidance weight
-  k_list: [10, 100, 500] # used by train_with_more_metrics.py
-  top_k: 10 # used by train.py
-
+  cfg_w: 2.0 # classifier-free guidance weight (swept in test.py)
+  top_k: 10 # K value for HR@K and NDCG@K

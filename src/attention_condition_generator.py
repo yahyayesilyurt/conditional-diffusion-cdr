@@ -1,42 +1,50 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class AttentionConditionGenerator(nn.Module):
     """
-    Cross-domain condition generator using attention.
+    GNN-Anchored Cross-Domain Condition Generator.
+
+    Triple-Stream design:
+      Query   = h_u_cross                        (GNN identity — "Who am I?")
+      Key/Val = [h_u_source || h_u_target]        (Two intent sources)
+
+    Differences from the old design:
+      - domain_indicator (static, user-independent Query) removed
+      - h_u_cross taken as Query / GNN-Anchor (user-specific, dynamic)
+      - h_u_source (book/movie history) added as 3rd stream to K/V
+      - target_domain parameter removed (was unused)
+      - Post-Norm → Pre-Norm (reduced gradient vanishing risk)
+      - Double Dropout in FFN → single Dropout
+      - query.clone() removed (unnecessary memory copy)
+      - super(ClassName, self) → super() (modern Python style)
 
     Input vectors:
-      h_u_cross  : Cross-domain signal from the GNN user embedding.
-                   The user's representation after receiving messages from both
-                   the book and movie graphs.
-                   In e2e_wrapper: user_proj(user_embedding[user_id])
-      h_u_target : Domain-specific signal from the target domain aggregator.
-                   Self-attention output over the user's movie history.
-                   In e2e_wrapper: movie_aggregator(movie_seq_embs)
+      h_u_cross  : (B, D) — GNN user embedding (Query / Anchor)
+      h_u_source : (B, D) — source domain aggregator output (Key/Value)
+                            Amazon: book history | Douban: movie history
+      h_u_target : (B, D) — target domain aggregator output (Key/Value)
+                            Amazon: movie history | Douban: music history
 
-    Combines these two signals with cross-attention to produce
-    the c_ud condition vector for diffusion.
+    The model's internal question (separate for each user and step):
+      "For the user at this position in the GNN space, should the source
+       domain or the target domain history be more decisive?"
+
+    Returns:
+      c_ud : (B, D) — diffusion condition vector (L2 norm applied in E2EWrapper)
     """
 
-    def __init__(self, embed_dim=128, num_heads=4, ffn_dim=512, dropout=0.1):
-        super(AttentionConditionGenerator, self).__init__()
+    def __init__(self, embed_dim=256, num_heads=8, ffn_dim=1024, dropout=0.1):
+        super().__init__()
 
-        assert embed_dim % num_heads == 0, \
+        assert embed_dim % num_heads == 0, (
             f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})."
-
-        # Learnable domain indicators — v_A, v_B
-        # Signal for "which domain am I recommending for?"
-        # Same for all users — query is user-independent.
-        self.domain_indicator_Book  = nn.Parameter(torch.randn(1, embed_dim) * 0.02)
-        self.domain_indicator_Movie = nn.Parameter(torch.randn(1, embed_dim) * 0.02)
+        )
 
         # Cross-Attention:
-        # Query   = domain_indicator          — "what am I looking for?"
-        # Key/Val = [h_u_cross; h_u_target]   — "what can I attend to?"
-        # Attention weights learn how much to trust the cross-domain
-        # and target-domain signals respectively.
+        # Query   = h_u_cross                  (GNN identity)
+        # Key/Val = [h_u_source; h_u_target]   (two intent sources)
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -45,44 +53,42 @@ class AttentionConditionGenerator(nn.Module):
         )
         self.norm1 = nn.LayerNorm(embed_dim)
 
+        # Feed-Forward Network
+        # ffn_dim is provided externally (E2EWrapper: embed_dim * 4)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ffn_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(ffn_dim, embed_dim),
-            nn.Dropout(dropout)
+            nn.Linear(ffn_dim, embed_dim)
         )
         self.norm2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, h_u_cross, h_u_target, target_domain='Movie'):
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, h_u_cross, h_u_source, h_u_target):
         """
-        h_u_cross  : (B, D) — GNN user embedding (cross-domain signal)
-        h_u_target : (B, D) — movie history aggregator output (domain-specific)
-        target_domain : 'Movie' or 'Book'
+        h_u_cross  : (B, D) — GNN user embedding
+        h_u_source : (B, D) — source domain intent (book/movie history)
+        h_u_target : (B, D) — target domain intent (movie/music history)
 
         Returns:
-            c_ud : (B, D) — condition vector (normalization is done in e2e_wrapper)
+            c_ud : (B, D)
         """
-        batch_size = h_u_cross.size(0)
+        # 1. K/V: stack source and target intents side by side → (B, 2, D)
+        kv = torch.stack([h_u_source, h_u_target], dim=1)
 
-        # 1. KV: stack the two signals in sequence → (B, 2, D)
-        #    [0] = cross-domain signal (GNN user)
-        #    [1] = target-domain signal (movie history)
-        kv = torch.stack([h_u_cross, h_u_target], dim=1)
+        # 2. Query: GNN identity → (B, 1, D)
+        query = h_u_cross.unsqueeze(1)
 
-        # 2. Query: target domain indicator → (B, 1, D)
-        if target_domain == 'Movie':
-            query = self.domain_indicator_Movie.expand(batch_size, 1, -1)
-        else:
-            query = self.domain_indicator_Book.expand(batch_size, 1, -1)
+        # 3. Pre-Norm Cross-Attention + Residual
+        attn_out, _ = self.cross_attention(
+            query=self.norm1(query),
+            key  =self.norm1(kv),
+            value=self.norm1(kv)
+        )
+        x = query + self.dropout(attn_out)              # (B, 1, D)
 
-        # 3. Cross-Attention
-        attn_out, _ = self.cross_attention(query, kv, kv)  # (B, 1, D)
+        # 4. Pre-Norm FFN + Residual
+        x = x + self.dropout(self.ffn(self.norm2(x)))  # (B, 1, D)
 
-        # 4. Residual + LayerNorm
-        c_ud = self.norm1(query.clone() + attn_out)        # (B, 1, D)
-
-        # 5. FFN + Residual
-        c_ud = self.norm2(c_ud + self.ffn(c_ud))           # (B, 1, D)
-
-        return c_ud.squeeze(1)                              # (B, D)
+        return x.squeeze(1)                             # (B, D)
